@@ -37,25 +37,34 @@ _REGISTRY: Dict[str, NLAMapping] = {
 }
 
 def discover_nla_config(model: Any) -> Optional[NLAMapping]:
+    """
+    Automatically discovers the NLA mapping given a model or model ID.
+    Returns the NLAMapping if found, else None.
+    """
     model_id = ""
     config = None
+    
     if isinstance(model, str):
         model_id = model
         try:
             config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-        except:
+        except Exception:
             pass
     elif hasattr(model, "config"):
         config = model.config
         model_id = getattr(config, "_name_or_path", "")
+        
     if not config:
+        # Fallback to string matching
         for key, mapping in _REGISTRY.items():
             if key.lower() in model_id.lower():
                 return mapping
         return None
+        
     arch = config.architectures[0] if hasattr(config, "architectures") and config.architectures else ""
     num_layers = getattr(config, "num_hidden_layers", 0)
     hidden_size = getattr(config, "hidden_size", 0)
+    
     if "Qwen2" in arch and num_layers == 28 and hidden_size == 3584:
         return _REGISTRY["Qwen2.5-7B-Instruct"]
     if "Gemma3" in arch and num_layers == 48 and hidden_size == 3840:
@@ -64,7 +73,9 @@ def discover_nla_config(model: Any) -> Optional[NLAMapping]:
         return _REGISTRY["Gemma-3-27B-IT"]
     if "Llama" in arch and num_layers == 80 and hidden_size == 8192:
         return _REGISTRY["Llama-3.3-70B-Instruct"]
+        
     for key, mapping in _REGISTRY.items():
         if key.lower() in model_id.lower():
             return mapping
+            
     return None
