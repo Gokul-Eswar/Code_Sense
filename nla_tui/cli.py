@@ -2,126 +2,122 @@ import asyncio
 import argparse
 import sys
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, BitsAndBytesConfig
-from threading import Thread
 from rich.console import Console
-from rich.prompt import Prompt
 
-from .registry import discover_nla_config
+from .providers.local import LocalHFProvider
+from .providers.remote import RemoteHTTPProvider
 from .client import NLAClient
-from .interceptor import ThoughtInterceptor
-from .tui import run_tui, NLADashboard
+from .tui import NLATextualApp
+from .filter import ThoughtFilter
 
 console = Console()
 
 async def chat(args):
-    console.print(f"[bold green]Loading base model:[/bold green] {args.model} on {args.device}...")
-    
-    bnb_config = None
-    if args.load_in_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-    elif args.load_in_8bit:
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-
-    try:
-        tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
+    if args.remote_url:
+        console.print(f"[bold green]Connecting to remote provider:[/bold green] {args.remote_url}...")
+        provider = RemoteHTTPProvider(args.remote_url)
+        nla_model_id = args.nla_model
+        if not nla_model_id:
+            console.print("[bold red]Error:[/bold red] --nla-model is required when using --remote-url.")
+            return
+    else:
+        console.print(f"[bold green]Loading local provider:[/bold green] {args.model}...")
+        provider = LocalHFProvider(
             args.model, 
-            torch_dtype=torch.bfloat16 if "cuda" in args.device and not bnb_config else torch.float32,
-            device_map=args.device, 
-            trust_remote_code=True,
-            quantization_config=bnb_config
+            device=args.device, 
+            load_in_4bit=args.load_in_4bit, 
+            load_in_8bit=args.load_in_8bit
         )
-    except Exception as e:
-        console.print(f"[bold red]Failed to load base model {args.model}:[/bold red] {e}")
-        return
+        nla_model_id = provider.mapping.nla_model_id
 
-    mapping = discover_nla_config(model)
-    if not mapping:
-        console.print(f"[bold red]Error:[/bold red] Architecture of {args.model} is not supported by current NLA mappings.")
-        return
-    
-    console.print(f"[bold green]Discovered NLA Model:[/bold green] {mapping.nla_model_id} (Extracting at Layer {mapping.extraction_layer})")
+    console.print(f"[bold green]NLA Verbalizer:[/bold green] {nla_model_id}")
     
     try:
-        client = NLAClient(mapping.nla_model_id, sglang_url=args.sglang_url, device=args.device)
+        client = NLAClient(nla_model_id, sglang_url=args.sglang_url, device=args.device)
     except Exception as e:
         console.print(f"[bold red]Failed to initialize NLA Client:[/bold red] {e}")
         return
 
-    interceptor = ThoughtInterceptor(model, mapping.extraction_layer)
-    
+    app = NLATextualApp(model_info=provider.get_model_info())
     history = []
-    dashboard = NLADashboard()
-    
-    console.print("\n[bold cyan]Chat session started. Type 'exit' or 'quit' to end.[/bold cyan]\n")
+    thought_filter = ThoughtFilter()
+    sem = asyncio.Semaphore(5) # Max 5 concurrent verbalizer requests
 
-    while True:
-        try:
-            prompt = Prompt.ask("[bold yellow]User[/bold yellow]")
-            if prompt.strip().lower() in ("exit", "quit"):
-                break
-        except (EOFError, KeyboardInterrupt):
-            break
-
-        if not prompt.strip():
-            continue
-
+    async def process_generation(prompt):
         history.append({"role": "user", "content": prompt})
-        dashboard.update(f"[bold yellow]User:[/bold yellow] {prompt}\n\n[bold green]Assistant:[/bold green] ")
+        thought_filter.reset()
         
-        async def generator():
-            formatted_prompt = tok.apply_chat_template(history, tokenize=False, add_generation_prompt=True)
-            ids = tok(formatted_prompt, return_tensors="pt").to(model.device)
-            streamer = TextIteratorStreamer(tok, skip_prompt=True, skip_special_tokens=True)
+        # Generator from provider
+        stream = provider.generate_stream(prompt, history)
+        
+        full_response = ""
+        async for chunk in stream:
+            if chunk["done"]:
+                break
             
-            gen_kwargs = dict(
-                **ids, 
-                streamer=streamer, 
-                max_new_tokens=256, 
-                do_sample=True, 
-                temperature=0.7
-            )
+            token = chunk["token"]
+            activation = chunk["activation"]
             
-            thread = Thread(target=model.generate, kwargs=gen_kwargs)
-            thread.start()
+            if token:
+                full_response += token
+                app.call_from_thread(app.write_token, token)
             
-            full_response = ""
-            for text in streamer:
-                full_response += text
-                yield text
-                await asyncio.sleep(0.01) # Yield control
+            if activation is not None:
+                # Hybrid Smart Filtering
+                if thought_filter.should_translate(token, activation):
+                    asyncio.create_task(proc_thought(activation))
+                
+            await asyncio.sleep(0.001)
             
-            history.append({"role": "assistant", "content": full_response})
-            dashboard.update("\n\n")
+        history.append({"role": "assistant", "content": full_response})
+        app.call_from_thread(app.write_token, "\n\n")
 
-        with interceptor:
-            await run_tui(generator, client, interceptor, dashboard=dashboard)
+    async def proc_thought(act):
+        async with sem:
+            try:
+                thought = await client.get_thought(act)
+                app.call_from_thread(app.write_thought, thought)
+            except Exception as e:
+                app.call_from_thread(app.write_thought, f"[red]Error:[/red] {e}")
 
-    console.print("\n[bold cyan]Session ended.[/bold cyan]")
+    app.gen_fn = process_generation
+    await app.run_async()
 
 def main():
     parser = argparse.ArgumentParser(description="NLA TUI - Visualize AI thoughts in real-time.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     
     c = sub.add_parser("chat", help="Start a chat session with visualization.")
-    c.add_argument("--model", required=True, help="Base model ID (e.g., Qwen/Qwen2.5-7B-Instruct)")
-    c.add_argument("--sglang-url", help="SGLang server URL (optional, defaults to local inference)")
-    c.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Device to run on (e.g., cuda, cpu)")
-    c.add_argument("--load-in-4bit", action="store_true", help="Load base model in 4-bit (requires bitsandbytes)")
-    c.add_argument("--load-in-8bit", action="store_true", help="Load base model in 8-bit (requires bitsandbytes)")
+    c.add_argument("--model", help="Base model ID (required for local mode)")
+    c.add_argument("--remote-url", help="URL of a remote NLA Sidecar or SGLang server.")
+    c.add_argument("--nla-model", help="NLA Verbalizer model ID (required for remote mode if not auto-detected).")
+    c.add_argument("--sglang-url", help="SGLang server URL for the NLA Verbalizer.")
+    c.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Device to run on.")
+    c.add_argument("--load-in-4bit", action="store_true")
+    c.add_argument("--load-in-8bit", action="store_true")
     
+    # Sidecar command
+    s = sub.add_parser("sidecar", help="Run the NLA Activation Sidecar server.")
+    s.add_argument("--model", required=True)
+    s.add_argument("--device", default="cuda")
+    s.add_argument("--port", type=int, default=8080)
+    s.add_argument("--load-in-4bit", action="store_true")
+
     args = parser.parse_args()
     if args.cmd == "chat":
         try:
             asyncio.run(chat(args))
         except KeyboardInterrupt:
             sys.exit(0)
+    elif args.cmd == "sidecar":
+        from .sidecar import app as fast_app
+        from .providers.local import LocalHFProvider as LProv
+        import uvicorn
+        import nla_tui.sidecar as sidecar_mod
+        
+        print(f"Loading model {args.model} for Sidecar...")
+        sidecar_mod.provider = LProv(args.model, device=args.device, load_in_4bit=args.load_in_4bit)
+        uvicorn.run(fast_app, host="0.0.0.0", port=args.port)
 
 if __name__ == "__main__":
     main()

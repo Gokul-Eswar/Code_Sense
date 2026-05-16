@@ -29,6 +29,10 @@ class ThoughtInterceptor:
         hidden_states = output[0] if isinstance(output, tuple) else output
         
         # Get the activation of the last token: shape -> [hidden_size]
-        # For generation, batch is usually 1, and we care about the newly generated token.
-        last_token_activation = hidden_states[:, -1, :].detach().cpu()
+        # We assume batch size 1 for TUI generation.
+        if hidden_states.ndim == 3:
+            last_token_activation = hidden_states[0, -1, :].detach().cpu()
+        else:
+            last_token_activation = hidden_states[-1, :].detach().cpu()
+            
         self.queue.put(last_token_activation)

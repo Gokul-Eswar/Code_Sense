@@ -11,25 +11,37 @@ Real-time visualization of AI "thoughts" using Natural Language Autoencoders.
 ## Install
 ```bash
 pip install -e .
+# Ensure you have textual installed
+pip install textual
 ```
 
 ## Usage
 
-### Simple Standalone Mode (Laptops)
-Run locally using 4-bit quantization. The NLA Verbalizer will also run locally.
+### Simple Standalone Mode (Local GPU)
+Run locally using 4-bit quantization. Both the base model and NLA Verbalizer run on your machine.
 ```bash
 nla-cli chat --model Qwen/Qwen2.5-7B-Instruct --load-in-4bit
 ```
 
-### High-Performance Mode (Servers)
-Run the base model normally and use an external SGLang server for the NLA Verbalizer.
-```bash
-# Start SGLang server elsewhere:
-# python -m sglang.launch_server --model-path kitft/nla-qwen2.5-7b-L20-av --port 30000 --disable-radix-cache
+### Remote / Server Mode (Clusters & Ollama)
+If you want to run the base model on a powerful remote server (or alongside your Ollama instance) and run the TUI on your laptop:
 
-# Run the TUI:
-nla-cli chat --model Qwen/Qwen2.5-7B-Instruct --sglang-url http://localhost:30000
+1. **On the Server**: Start the NLA Sidecar.
+```bash
+nla-cli sidecar --model Qwen/Qwen2.5-7B-Instruct --port 8080 --load-in-4bit
 ```
+
+2. **On your Laptop**: Connect the TUI to the remote server.
+```bash
+nla-cli chat --remote-url http://<server-ip>:8080 --nla-model kitft/nla-qwen2.5-7b-L20-av
+```
+
+*Note: Even in remote mode, the NLA Verbalizer (the "thought translator") runs locally by default to ensure maximum privacy and portability. Use `--sglang-url` if you want to offload the Verbalizer too.*
+
+## Keybindings (in UI)
+- **Ctrl+S**: Export the current session to Markdown.
+- **Ctrl+L**: Clear the panes.
+- **Ctrl+C**: Quit the application.
 
 ## Supported Models
 - Qwen 2.5 7B

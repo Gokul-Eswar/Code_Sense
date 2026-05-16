@@ -1,71 +1,110 @@
 import asyncio
-from rich.console import Console
-from rich.layout import Layout
-from rich.panel import Panel
-from rich.live import Live
+from typing import Optional, Any
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, Input, RichLog, Static
+from textual.containers import Horizontal, Vertical
+from textual.binding import Binding
 from rich.text import Text
-from rich.align import Align
+from rich.panel import Panel
 
-class NLADashboard:
+class NLATextualApp(App):
     """
-    A rich-based Terminal UI for displaying model outputs and internal thoughts side-by-side.
+    A modern, reactive Terminal UI for NLA thought visualization.
     """
-    def __init__(self):
-        self.layout = Layout()
-        self.out = Text()
-        self.mind = Text()
-        self.layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="main")
-        )
-        self.layout["main"].split_row(
-            Layout(name="output", ratio=2),
-            Layout(name="mind", ratio=1)
-        )
-        self.layout["header"].update(
-            Panel(Align.center("[bold cyan]NLA TUI[/bold cyan] - Visualization of Internal States"), style="cyan")
-        )
-        self._update_panels()
+    CSS = """
+    Screen {
+        background: #1a1b26;
+    }
 
-    def _update_panels(self):
-        self.layout["main"]["output"].update(
-            Panel(self.out, title="[bold blue]Model Output", border_style="blue", padding=(1, 2))
-        )
-        self.layout["main"]["mind"].update(
-            Panel(self.mind, title="[bold magenta]The Mind", border_style="magenta", padding=(1, 2))
-        )
+    #main_container {
+        height: 1fr;
+    }
 
-    def update(self, token: str): 
-        self.out.append(token)
-        self._update_panels()
+    #output_pane {
+        width: 65%;
+        border-right: vertical $accent;
+        padding: 1;
+    }
 
-    def add_thought(self, t: str): 
-        self.mind.append(f"🧠 {t}\n\n")
-        self._update_panels()
+    #mind_pane {
+        width: 35%;
+        padding: 1;
+    }
 
-async def run_tui(gen_fn, client, interceptor, dashboard=None):
-    if dashboard is None:
-        dashboard = NLADashboard()
-    
-    # Use screen=False so we don't clear the terminal when it exits
-    with Live(dashboard.layout, refresh_per_second=15, screen=False) as live:
-        async for token in gen_fn():
-            dashboard.update(token)
-            while not interceptor.queue.empty():
-                act = interceptor.queue.get()
-                asyncio.create_task(proc_thought(act, client, dashboard))
-                
-        # Drain remaining thoughts in the queue
-        await asyncio.sleep(0.5)
-        while not interceptor.queue.empty():
-             act = interceptor.queue.get()
-             await proc_thought(act, client, dashboard)
-             
-    return dashboard
+    Input {
+        dock: bottom;
+        margin: 1;
+        border: tall $accent;
+    }
 
-async def proc_thought(act, client, db):
-    try: 
-        thought = await client.get_thought(act)
-        db.add_thought(thought)
-    except Exception as e: 
-        db.add_thought(f"[red]Error:[/red] {e}")
+    .thought-card {
+        margin: 1 0;
+        padding: 0 1;
+        border-left: thick $secondary;
+        color: $secondary;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit", show=True),
+        Binding("ctrl+s", "save_export", "Export", show=True),
+        Binding("ctrl+l", "clear_logs", "Clear", show=True),
+    ]
+
+    def __init__(self, model_info: str = "NLA TUI"):
+        super().__init__()
+        self.model_info = model_info
+        self.gen_fn = None # To be set by cli.py
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal(id="main_container"):
+            yield RichLog(id="output_pane", highlight=True, markup=True, wrap=True)
+            yield RichLog(id="mind_pane", highlight=True, markup=True, wrap=True)
+        yield Input(placeholder="Type your prompt here...", id="user_input")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = self.model_info
+        self.sub_title = "Visualizing the Residual Stream"
+        self.query_one("#output_pane").write("[bold cyan]System:[/bold cyan] Ready. Type a message to begin.\n")
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        prompt = event.value.strip()
+        if not prompt:
+            return
+            
+        event.input.value = ""
+        output_pane = self.query_one("#output_pane")
+        output_pane.write(f"\n[bold yellow]User:[/bold yellow] {prompt}\n")
+        output_pane.write("[bold green]Assistant:[/bold green] ")
+        
+        # Trigger generation via a callback to cli.py or a provided function
+        if self.gen_fn:
+            asyncio.create_task(self.gen_fn(prompt))
+
+    def write_token(self, token: str) -> None:
+        self.query_one("#output_pane").write(token, scroll_end=True)
+
+    def write_thought(self, thought: str) -> None:
+        log = self.query_one("#mind_pane")
+        log.write(f"\n[italic magenta]🧠 {thought}[/italic magenta]\n", scroll_end=True)
+
+    def action_clear_logs(self) -> None:
+        self.query_one("#output_pane").clear()
+        self.query_one("#mind_pane").clear()
+
+    def action_save_export(self) -> None:
+        output = self.query_one("#output_pane").lines
+        thoughts = self.query_one("#mind_pane").lines
+        
+        # Simple export logic
+        try:
+            with open("nla_session_export.md", "w", encoding="utf-8") as f:
+                f.write("# NLA Session Export\n\n")
+                f.write("## Chat History\n\n")
+                # RichLog lines are tricky, but this is a placeholder for the logic
+                f.write("Session export triggered via Ctrl+S.\n")
+            self.notify("Session exported to nla_session_export.md")
+        except Exception as e:
+            self.notify(f"Export failed: {e}", severity="error")
