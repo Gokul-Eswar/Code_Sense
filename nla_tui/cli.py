@@ -121,3 +121,62 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+### ULTRA DETAILED CODE EXPLANATION ###
+#
+# This file (`cli.py`) is the main entry point for the NLA TUI application. It handles command-line arguments,
+# initializes the selected provider (local or remote), manages the chat loop, and launches the Textual TUI.
+#
+# --- Imports ---
+# - `asyncio`: Used for asynchronous programming, enabling non-blocking I/O for streaming tokens and verbalizing thoughts.
+# - `argparse`: Standard library for parsing command-line arguments.
+# - `sys`: Used for system-level operations like `sys.exit(0)`.
+# - `torch`: PyTorch library, used here primarily for device detection (`torch.cuda.is_available()`).
+# - `rich.console.Console`: Used for beautiful terminal output during the initialization phase.
+# - `.providers.local.LocalHFProvider`: Handles running models locally using Hugging Face Transformers.
+# - `.providers.remote.RemoteHTTPProvider`: Handles connecting to a remote "Sidecar" server that hosts the model.
+# - `.client.NLAClient`: The client that talks to the NLA Verbalizer (often via SGLang).
+# - `.tui.NLATextualApp`: The main UI application class built with the Textual framework.
+# - `.filter.ThoughtFilter`: Logic to decide which activations are "interesting" enough to verbalize.
+#
+# --- Global Variables ---
+# - `console`: (type: `Console`) Instance of Rich Console for colored terminal logging.
+#
+# --- Functions ---
+#
+# 1. `chat(args)` (Async Function)
+#    - **Purpose**: Initializes the provider and NLA client, then runs the TUI application in chat mode.
+#    - **Parameters**: `args` (type: `argparse.Namespace`): The parsed command-line arguments.
+#    - **Logic Flow**:
+#      - Checks if `args.remote_url` is provided. If so, it creates a `RemoteHTTPProvider`.
+#      - If not, it creates a `LocalHFProvider` using the provided model ID and quantization flags.
+#      - Initializes `NLAClient` using `nla_model_id`.
+#      - Creates an `NLATextualApp` instance.
+#      - Defines an inner async function `process_generation(prompt)` to handle user input.
+#      - Defines an inner async function `proc_thought(act)` to handle verbalizing specific activations.
+#      - Uses an `asyncio.Semaphore(5)` named `sem` to limit concurrent verbalization requests to 5.
+#      - `process_generation(prompt)`:
+#        - Appends prompt to `history`.
+#        - Gets an async stream of tokens and activations from the provider.
+#        - Iterates over the stream:
+#          - Updates the TUI with new tokens using `app.call_from_thread(app.write_token, token)`.
+#          - Uses `thought_filter` to decide if an activation should be verbalized.
+#          - If yes, starts a background task `proc_thought(activation)`.
+#      - `proc_thought(act)`:
+#        - Waits for its turn in the semaphore.
+#        - Calls `client.get_thought(act)` to get the natural language explanation.
+#        - Updates the TUI with the result using `app.call_from_thread(app.write_thought, thought)`.
+#      - Finally, sets `app.gen_fn` and runs the app with `await app.run_async()`.
+#
+# 2. `main()` (Function)
+#    - **Purpose**: Defines the CLI structure and dispatches to the correct command.
+#    - **Logic Flow**:
+#      - Sets up `argparse` with two sub-commands: `chat` and `sidecar`.
+#      - `chat` command arguments: `--model`, `--remote-url`, `--nla-model`, `--sglang-url`, `--device`, `--load-in-4bit`, `--load-in-8bit`.
+#      - `sidecar` command arguments: `--model`, `--device`, `--port`, `--load-in-4bit`.
+#      - If `cmd == "chat"`, calls `asyncio.run(chat(args))`.
+#      - If `cmd == "sidecar"`, it dynamically imports `FastAPI`, `uvicorn`, and the sidecar module, initializes a `LocalHFProvider` globally in the sidecar module, and starts the server.
+#
+# --- Main Execution Block ---
+# - Calls `main()` if the script is run directly.
+#

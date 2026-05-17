@@ -55,3 +55,50 @@ class RemoteHTTPProvider(ActivationProvider):
                     }
                 except Exception as e:
                     yield {"token": f"[Error: {e}]", "activation": None, "done": False}
+
+### ULTRA DETAILED CODE EXPLANATION ###
+#
+# This file (`remote.py`) implements the `RemoteHTTPProvider`, which allows the TUI to connect to a model 
+# hosted on a remote server (via the NLA Sidecar). This is critical for users who don't have a powerful 
+# GPU on their local machine.
+#
+# --- Imports ---
+# - `asyncio`: Used for asynchronous network operations.
+# - `httpx`: A modern HTTP client for Python, used here for its excellent support for async streaming.
+# - `orjson`: Used for fast JSON parsing of the data received from the server.
+# - `torch`: PyTorch, used to reconstruct the activation tensors from raw bytes.
+# - `base64`: Used to decode the activation vectors sent over HTTP.
+# - `numpy`: Used as an intermediate buffer for efficient memory conversion from bytes to torch tensors.
+# - `.base.ActivationProvider`: The parent class defining the interface.
+#
+# --- Class: RemoteHTTPProvider ---
+#
+# 1. `__init__(self, remote_url)`
+#    - **Purpose**: Initializes the provider with the server address.
+#    - **Parameters**: `remote_url` (str): The base URL of the NLA Sidecar (e.g., `http://1.2.3.4:8080`).
+#    - **Variables**:
+#        - `self.remote_url`: The cleaned URL.
+#        - `self._http_client`: (type: `httpx.AsyncClient`) A persistent HTTP client with a long (120s) timeout.
+#
+# 2. `get_model_info(self)`
+#    - **Purpose**: Returns a identification string for the UI header.
+#
+# 3. `generate_stream(self, prompt, history, **kwargs)` (Async)
+#    - **Purpose**: Sends the generation request to the remote server and streams the result back.
+#    - **Logic Flow**:
+#        - **Step 1**: Prepares the JSON `payload` containing the prompt and conversation history.
+#        - **Step 2**: Opens a streaming POST request to the `/generate` endpoint using `self._http_client.stream`.
+#        - **Step 3 (Streaming Loop)**: Iterates over the response lines using `aiter_lines()`.
+#            - It looks for lines starting with `data: ` (Standard SSE format).
+#            - If it finds `[DONE]`, it yields the final chunk and exits the loop.
+#            - **Step 4 (Data Parsing)**:
+#                - Parses the JSON data string into a dictionary.
+#                - Extracts the `token`.
+#            - **Step 5 (Activation Reconstruction)**:
+#                - If `activation_b64` is present in the data:
+#                    - Decodes the Base64 string into `raw_bytes`.
+#                    - Uses `np.frombuffer` to interpret these bytes as an array of `float32`.
+#                    - Converts the NumPy array into a `torch.Tensor` using `torch.from_numpy`.
+#            - **Step 6**: Yields the dictionary containing the token and the reconstructed activation tensor.
+#        - **Step 7 (Error Handling)**: If parsing or decoding fails, it yields an error token to inform the user.
+#

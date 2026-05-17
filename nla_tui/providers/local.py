@@ -84,3 +84,53 @@ class LocalHFProvider(ActivationProvider):
             }
             
         yield {"token": "", "activation": None, "done": True}
+
+### ULTRA DETAILED CODE EXPLANATION ###
+#
+# This file (`local.py`) implements the `LocalHFProvider`, which is responsible for loading a Hugging Face model, 
+# running it on the local hardware, and extracting activations token-by-token using the `ThoughtInterceptor`.
+#
+# --- Imports ---
+# - `asyncio`: Used to integrate the blocking Hugging Face generator with an asynchronous stream.
+# - `torch`: PyTorch, used for hardware management and tensor handling.
+# - `threading.Thread`: Used to run the model generation in a separate thread so it doesn't block the async loop.
+# - `transformers`: Provides the core utilities for loading models (`AutoModelForCausalLM`), tokenizers (`AutoTokenizer`), 
+#   streaming text (`TextIteratorStreamer`), and quantization (`BitsAndBytesConfig`).
+# - `.base.ActivationProvider`: The parent class defining the interface.
+# - `..interceptor.ThoughtInterceptor`: The hook manager that captures hidden states.
+# - `..registry.discover_nla_config`: Used to find the correct extraction layer for the loaded model.
+#
+# --- Class: LocalHFProvider ---
+#
+# 1. `__init__(self, model_id, device, load_in_4bit, load_in_8bit)`
+#    - **Purpose**: Loads the model and tokenizer into memory and sets up the interceptor.
+#    - **Parameters**: 
+#        - `model_id` (str): Repo ID or local path.
+#        - `device` (str): e.g., "cuda" or "cpu".
+#        - `load_in_4bit/8bit` (bool): If True, uses `bitsandbytes` to quantize the model for lower memory usage.
+#    - **Logic**:
+#        - Configures `BitsAndBytesConfig` if quantization is requested.
+#        - Loads the tokenizer and model with `trust_remote_code=True`.
+#        - Automatically identifies the NLA mapping via `discover_nla_config`.
+#        - Initializes the `ThoughtInterceptor` for the model and the mapped layer.
+#
+# 2. `get_model_info(self)`
+#    - **Purpose**: Returns a identification string for the UI.
+#
+# 3. `generate_stream(self, prompt, history, **kwargs)` (Async)
+#    - **Purpose**: Runs inference and yields a stream of tokens and activations.
+#    - **Logic Flow**:
+#        - **Step 1**: Formats the chat history into a string using the model's chat template.
+#        - **Step 2**: Tokenizes the formatted string.
+#        - **Step 3**: Sets up a `TextIteratorStreamer`.
+#        - **Step 4**: Prepares generation arguments (token limits, temperature, etc.).
+#        - **Step 5**: Starts `model.generate()` in a separate `Thread`. This is necessary because `model.generate` is 
+#          a blocking synchronous function, but our UI needs to remain responsive.
+#        - **Step 6**: Uses the interceptor as a context manager (`with self.interceptor:`).
+#        - **Step 7 (Streaming Loop)**: Iterates over the `streamer` (which receives tokens from the background thread).
+#            - For each token, it checks `self.interceptor.queue` for a new activation vector.
+#            - Yields a dictionary with the token and activation.
+#            - Small `asyncio.sleep(0.01)` allows the event loop to process other tasks (like UI updates).
+#        - **Step 8 (Cleanup)**: After the main loop, it drains any leftover activations from the queue.
+#        - **Step 9**: Yields a `done: True` message.
+#
