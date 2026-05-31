@@ -3,6 +3,7 @@ from typing import Optional, Any
 from .providers.local import LocalHFProvider
 from .client import NLAClient
 from .tui import NLATextualApp
+from .filter import ThoughtFilter
 
 class NLAWrapper:
     """
@@ -15,6 +16,7 @@ class NLAWrapper:
 
     async def run_chat_ui(self):
         history = []
+        thought_filter = ThoughtFilter()
 
         async def proc_thought(act):
             try:
@@ -25,6 +27,7 @@ class NLAWrapper:
 
         async def run_generation(prompt):
             history.append({"role": "user", "content": prompt})
+            thought_filter.reset()
             stream = self.provider.generate_stream(prompt, history)
             
             full_response = ""
@@ -40,7 +43,8 @@ class NLAWrapper:
                     self.app.call_from_thread(self.app.write_token, token)
                 
                 if activation is not None:
-                    asyncio.create_task(proc_thought(activation))
+                    if thought_filter.should_translate(token, activation):
+                        asyncio.create_task(proc_thought(activation))
                     
                 await asyncio.sleep(0.001)
                 

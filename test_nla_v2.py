@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from unittest.mock import MagicMock, patch
 from nla_tui.providers.local import LocalHFProvider
+from nla_tui.tui import NLATextualApp
+import os
 
 class MockModel(nn.Module):
     def __init__(self, hidden_size=128):
@@ -65,5 +67,44 @@ async def test_local_provider(mock_discover, mock_model_load, mock_tokenizer_loa
     assert len(activations) >= 2
     print("✅ LocalHFProvider test passed!")
 
+async def test_tui_export():
+    print("Testing TUI export action (Ctrl+S)...")
+    app = NLATextualApp(model_info="Test Model")
+    
+    # We run the app in headless/test mode using Textual's run_test() context manager
+    async with app.run_test() as pilot:
+        # Write dummy lines directly into the RichLogs
+        output_pane = app.query_one("#output_pane")
+        mind_pane = app.query_one("#mind_pane")
+        
+        output_pane.write("User: hello")
+        output_pane.write("Assistant: hi")
+        mind_pane.write("🧠 thought 1")
+        
+        # We need a small yield to let the writes flush
+        await asyncio.sleep(0.1)
+        
+        # Trigger Ctrl+S export action
+        await pilot.press("ctrl+s")
+        
+        # Verify file was written
+        assert os.path.exists("nla_session_export.md")
+        with open("nla_session_export.md", "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        print(f"Exported content:\n{content}")
+        assert "User: hello" in content
+        assert "Assistant: hi" in content
+        assert "🧠 thought 1" in content
+        
+        # Clean up
+        os.remove("nla_session_export.md")
+        
+    print("✅ TUI export test passed!")
+
+async def main():
+    await test_local_provider()
+    await test_tui_export()
+
 if __name__ == "__main__":
-    asyncio.run(test_local_provider())
+    asyncio.run(main())

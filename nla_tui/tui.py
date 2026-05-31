@@ -22,7 +22,7 @@ class NLATextualApp(App):
 
     #output_pane {
         width: 65%;
-        border-right: vertical $accent;
+        border-right: solid $accent;
         padding: 1;
     }
 
@@ -95,16 +95,26 @@ class NLATextualApp(App):
         self.query_one("#mind_pane").clear()
 
     def action_save_export(self) -> None:
-        output = self.query_one("#output_pane").lines
-        thoughts = self.query_one("#mind_pane").lines
+        output_pane = self.query_one("#output_pane")
+        mind_pane = self.query_one("#mind_pane")
         
-        # Simple export logic
+        # Save export logic extracting actual lines from both panes
         try:
             with open("nla_session_export.md", "w", encoding="utf-8") as f:
                 f.write("# NLA Session Export\n\n")
                 f.write("## Chat History\n\n")
-                # RichLog lines are tricky, but this is a placeholder for the logic
-                f.write("Session export triggered via Ctrl+S.\n")
+                if output_pane.lines:
+                    for line in output_pane.lines:
+                        f.write(line.text.rstrip() + "\n")
+                else:
+                    f.write("*(No chat history yet)*\n")
+                
+                f.write("\n---\n\n## Mind Stream (AI Thoughts)\n\n")
+                if mind_pane.lines:
+                    for line in mind_pane.lines:
+                        f.write(line.text.rstrip() + "\n")
+                else:
+                    f.write("*(No thoughts captured yet)*\n")
             self.notify("Session exported to nla_session_export.md")
         except Exception as e:
             self.notify(f"Export failed: {e}", severity="error")
